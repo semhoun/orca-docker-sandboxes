@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
+  "id": "docker-sandboxes",
+  "name": "Docker Sandboxes",
+  "version": "0.1.0",
+  "description": "Gère les microVM Docker locales. Le worker tourne sur l’hôte, hors microVM, avec les droits de votre compte utilisateur.",
+  "engines": { "orca": ">=1.4.247" },
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      { "id": "sandboxes", "title": "Docker Sandboxes", "icon": "package", "entry": "src/panel.tsx", "ui": "components" }
+    ]
+  },
+  "capabilities": []
+}
