@@ -6,7 +6,23 @@ Manage local Docker microVMs from Orca and open your projects over SSH. The pane
 
 ## Installation
 
-Install **Orca Desktop 1.4.247 or later** on the host. Make sure the `orca` CLI, **`sbx` 0.48.0 or later**, and the OpenSSH client (`ssh`) are on the host's `PATH`. The two modes that use a local repository also require Git (`git`) on the host.
+### Install a tagged version from GitHub
+
+1. Open **Settings → Plugins** in **Orca Desktop 1.4.247 or later**. Turn on plugins if needed.
+2. Choose **Install from Git** and enter `https://github.com/semhoun/orca-docker-sandboxes.git#v1.0.0`.
+3. Review the requested access before approving the installation. This plugin runs a trusted worker on the Orca host with your user permissions.
+
+If you use the Orca CLI, you can install the same tag from any directory:
+
+```sh
+orca plugin install semhoun/orca-docker-sandboxes@v1.0.0
+```
+
+The CLI prints the exact command to rerun with `--approve` and the installation fingerprint. Review the requested access before rerunning it. Both methods install the exact commit referenced by the tag. The tag must exist on GitHub; no manual clone or GitHub Release is required.
+
+### Set up Docker Sandboxes
+
+Make sure **`sbx` 0.48.0 or later** and the OpenSSH client (`ssh`) are on the host's `PATH`. The two modes that use a local repository also require Git (`git`) on the host.
 
 Follow the [Docker Sandboxes installation guide](https://docs.docker.com/ai/sandboxes/install/) to set up local virtualization (KVM on Linux). `sbx` requires neither Docker Desktop nor Docker Engine. This plugin guide targets Linux. The availability of `sbx` on macOS and Windows does not establish plugin compatibility on those platforms.
 
@@ -21,14 +37,6 @@ Follow the [Docker Sandboxes installation guide](https://docs.docker.com/ai/sand
    ```sh
    sbx setup ssh
    ```
-
-3. With Orca Desktop open and plugins enabled, run this command from the plugin root, where `orca-plugin.json` is located:
-
-   ```sh
-   orca plugin dev load .
-   ```
-
-   Review the requested access and explicitly approve the trusted worker. If the CLI requires approval, it prints the command to rerun with the plugin fingerprint. Orca loads the TypeScript files directly, with no npm dependency installation or build step.
 
 ## Quick start
 
@@ -64,6 +72,8 @@ The **panel** shows sandbox status and SSH connection details. It does not chang
 - **Deleting:** The panel does not delete sandboxes. Export your changes first, for example through Git. Then run `sbx rm <name>` in a terminal and review Docker's confirmation prompt. Any files inside the sandbox that you did not export will be lost. Remove the obsolete SSH target from Orca afterward.
 
 ## Development
+
+To develop the plugin, clone the repository and run `orca plugin dev load .` from the clone root with Orca Desktop open and plugins enabled. Review the requested access and follow the CLI's approval instructions. Orca loads the TypeScript files directly; no npm install or build step is needed.
 
 From the plugin root, run `orca plugin types .` if `.orca/types/` is missing, then run the checks:
 
