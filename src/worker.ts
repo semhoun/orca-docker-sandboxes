@@ -1,34 +1,10 @@
 import { lstat, realpath } from 'node:fs/promises'
 import type { OrcaWorkerApi } from 'orca/worker'
 import { runLocal, type Command, type Execution, type Run } from './process'
-import { isSandboxName, type Result, type Sandbox } from './protocol'
-
-const messages = {
-  input: 'Paramètres invalides. Vérifiez le nom, le gabarit et le mode de montage.',
-  sbxMissing: 'CLI sbx introuvable sur le PATH de l’hôte Orca.',
-  version: 'Version de sbx incompatible. Installez Docker Sandboxes 0.48.0 ou une version ultérieure.',
-  format: 'Format de liste sbx inconnu. Vérifiez la version de Docker Sandboxes.',
-  unavailable: 'Docker Sandboxes ou la microVM est indisponible. Vérifiez le daemon et ses prérequis Linux.',
-  login: 'Authentification Docker requise. Exécutez sbx login sur l’hôte.',
-  policy: 'Politique réseau non initialisée. Configurez-la manuellement dans Docker Sandboxes.',
-  timeout: 'Le délai de réponse est dépassé.',
-  cancelled: 'La requête a été interrompue.',
-  overflow: 'La réponse de la commande dépasse la taille autorisée.',
-  path: 'Choisissez un chemin absolu sans syntaxe de montage, vers la racine du checkout Git principal.',
-  gitMissing: 'Git est introuvable sur le PATH de l’hôte Orca.',
-  confirm: 'Confirmez le chemin canonique affiché avant de monter le dossier en lecture-écriture.',
-  collision: 'Ce nom est déjà utilisé. Actualisez la liste et choisissez un autre nom.',
-  stale: 'La cible ou son état a changé. Actualisez la liste avant de réessayer.',
-  busy: 'Une action est déjà en cours pour cette sandbox.',
-  create: 'Docker n’a pas confirmé la création de la sandbox.',
-  stop: 'Docker n’a pas confirmé l’arrêt. Fermez les sessions actives avant de réessayer ; le plugin ne force pas l’arrêt.',
-  sshMissing: 'OpenSSH est introuvable sur le PATH de l’hôte Orca.',
-  ssh: 'Échec OpenSSH. Vérifiez sbx login et sbx setup ssh, puis utilisez Test dans Settings → SSH pour diagnostiquer Orca.'
-} as const
-type ErrorCode = keyof typeof messages
+import { isSandboxName, type ErrorCode, type Result, type Sandbox } from './protocol'
 
 function fail(code: ErrorCode, uncertain = false): Result<never> {
-  return { ok: false, error: { code, message: messages[code], ...(uncertain ? { uncertain } : {}) } }
+  return { ok: false, error: { code, ...(uncertain ? { uncertain } : {}) } }
 }
 
 function ok<T>(value: T): Result<T> { return { ok: true, value } }

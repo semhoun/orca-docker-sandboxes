@@ -28,7 +28,7 @@ export default defineCheck({
   'liste indisponible': {
     requests: {
       ...noActions,
-      'sandboxes.list': { ok: false, error: { code: 'cli_unavailable', message: 'Docker Sandboxes est indisponible. Vérifiez l’installation de sbx.' } }
+      'sandboxes.list': { ok: false, error: { code: 'unavailable' } }
     }
   }
 })

@@ -1,9 +1,11 @@
 import {
-  atom, Badge, Button, Callout, Card, Code, Collapsible, EmptyState, Heading, Input,
+  atom, Badge, Button, Callout, Card, Code, Collapsible, EmptyState, env, Heading, Input,
   KeyValue, List, ListItem, plugin, read, Row, Select, set, Spinner, Stack, Text, update,
   type PanelContext
 } from 'orca'
 import { isSandboxName, type Agent, type Mode, type Result, type Sandbox } from './protocol'
+import { messages, type Locale } from './panel-messages'
+import { workerMessage } from './worker-messages'
 
 const LIST_TIMEOUT = 25_000
 const CREATE_TIMEOUT = 120_000
@@ -21,7 +23,7 @@ type Confirmation =
 const initialDraft: Draft = { name: '', agent: 'claude', mode: 'none', path: '' }
 const draft = atom(initialDraft)
 const inventory = atom<Inventory>({ rows: [], fresh: false })
-const pending = atom<string | null>('Lecture de la liste…')
+const pending = atom<string | null>(null)
 const listError = atom<string | null>(null)
 const notice = atom<Notice | null>(null)
 const selected = atom<Target | null>(null)
@@ -33,18 +35,14 @@ const agents = [
   { value: 'claude', label: 'Claude Code' },
   { value: 'codex', label: 'Codex' }
 ]
-const modes: { value: Mode; label: string; help: string }[] = [
-  { value: 'none', label: 'Sans montage', help: 'Aucun dossier hôte partagé. Clonez votre dépôt dans la microVM.' },
-  { value: 'clone', label: 'Clone du dépôt local', help: 'Docker crée un clone dans la microVM. La source hôte est accessible en lecture seule et Git peut ajouter un remote sandbox-<nom>.' },
-  { value: 'direct', label: 'Montage direct', help: 'Les écritures dans le dossier monté modifient le checkout hôte. Ouvrez ce checkout à distance ; pour des worktrees indépendants, choisissez Sans montage ou Clone du dépôt local.' }
-]
-const statuses = {
-  running: { label: 'En cours', tone: 'success' },
-  stopped: { label: 'Arrêtée', tone: 'neutral' },
-  starting: { label: 'Démarre', tone: 'warning' },
-  stopping: { label: 'S’arrête', tone: 'warning' },
-  unknown: { label: 'État inconnu', tone: 'warning' }
+const modes = ['none', 'clone', 'direct'] as const
+const statusTones = {
+  running: 'success', stopped: 'neutral', starting: 'warning', stopping: 'warning', unknown: 'warning'
 } as const
+
+function currentLocale(): Locale {
+  return env.locale.toLowerCase().split('-')[0] === 'fr' ? 'fr' : 'en'
+}
 
 function sameTarget(a: Target, b: Target | null): boolean {
   return b !== null && a.name === b.name && a.id === b.id
@@ -65,30 +63,28 @@ function editDraft(change: Partial<Draft>): void {
   update(draft, (value) => ({ ...value, ...change }))
 }
 
-function workerMessage(error: Extract<Result<unknown>, { ok: false }>['error'], fallback: string): string {
-  // Result messages are bounded, localized diagnostics supplied by the worker, not IPC errors.
-  return error.message || fallback
-}
-
-function rejected<T>(result: Result<T>, fallback: string): result is Extract<Result<T>, { ok: false }> {
+function rejected<T>(result: Result<T>, locale: Locale, fallback: string): result is Extract<Result<T>, { ok: false }> {
   if (result.ok) return false
-  const reason = workerMessage(result.error, fallback)
+  const t = messages[locale]
+  const reason = workerMessage(locale, result.error.code) ?? fallback
   set(notice, result.error.uncertain ? {
     tone: 'warning',
-    text: `${reason} L’action a peut-être abouti. Vérifiez la liste avant de réessayer.`
+    text: `${reason} ${t.uncertainHint} ${t.retryHint}`
   } : { tone: 'danger', text: reason })
   return true
 }
 
 async function refresh(): Promise<boolean> {
   if (lifetime?.aborted) return false
-  set(pending, 'Actualisation de la liste…')
+  const locale = currentLocale()
+  const t = messages[locale]
+  set(pending, t.refreshing)
   set(listError, null)
   try {
     const result = await plugin.request('sandboxes.list', {}, { timeoutMs: LIST_TIMEOUT })
     if (lifetime?.aborted) return false
     if (!result.ok) {
-      set(listError, workerMessage(result.error, 'Docker n’a pas fourni la liste des sandboxes.'))
+      set(listError, workerMessage(locale, result.error.code) ?? t.listError)
       return false
     }
     const current = read(selected)
@@ -96,7 +92,7 @@ async function refresh(): Promise<boolean> {
     set(inventory, { rows: result.value, fresh: true })
     return true
   } catch {
-    if (!lifetime?.aborted) set(listError, 'Orca n’a pas pu lire la liste des sandboxes.')
+    if (!lifetime?.aborted) set(listError, t.listTransport)
     return false
   }
 }
@@ -144,23 +140,25 @@ async function attempt(
   }
 }
 
-function uncertain(text: string): Notice {
-  return { tone: 'warning', text: `${text} Vérifiez la liste avant de réessayer.` }
+function uncertain(text: string, retryHint: string): Notice {
+  return { tone: 'warning', text: `${text} ${retryHint}` }
 }
 
 function create(snapshot: Inventory, expected?: Confirmation): void {
   if (!fresh(snapshot) || (read(confirmation) ?? undefined) !== expected) return
   const value = read(draft)
   if (!validDraft(value, snapshot.rows)) return
+  const locale = currentLocale()
+  const t = messages[locale]
   const { name, agent, mode, path } = value
   const input = mode === 'none' ? { name, agent, mode } : { name, agent, mode, path }
   if (mode === 'direct' && !expected) {
-    void attempt('Vérification du chemin local…', async () => {
+    void attempt(t.verifyingPath, async () => {
       const result = await plugin.request('sandboxes.create', { ...input, preview: true }, { timeoutMs: CREATE_TIMEOUT })
-      if (lifetime?.aborted || rejected(result, 'Le chemin local n’a pas pu être vérifié.')) return
+      if (lifetime?.aborted || rejected(result, locale, t.pathPreviewError)) return
       const canonicalPath = result.value.canonicalPath
       if (!canonicalPath) {
-        set(notice, { tone: 'danger', text: 'Orca n’a pas reçu de chemin canonique. Aucun montage n’a été demandé.' })
+        set(notice, { tone: 'danger', text: t.pathMissing })
         return
       }
       return () => {
@@ -168,21 +166,21 @@ function create(snapshot: Inventory, expected?: Confirmation): void {
           set(confirmation, { kind: 'direct', draft: value, canonicalPath })
         }
       }
-    }, { tone: 'danger', text: 'Orca n’a pas pu vérifier le chemin local. Aucun montage n’a été demandé.' })
+    }, { tone: 'danger', text: t.pathTransport })
     return
   }
   if (mode === 'direct' && (expected?.kind !== 'direct' || expected.draft !== value)) return
   const confirmedInput = expected?.kind === 'direct' ? { ...input, confirmedPath: expected.canonicalPath } : input
-  void attempt('Création de la sandbox…', async () => {
+  void attempt(t.creating, async () => {
     const result = await plugin.request('sandboxes.create', confirmedInput, { timeoutMs: CREATE_TIMEOUT })
-    if (lifetime?.aborted || rejected(result, 'La création a échoué.')) return
+    if (lifetime?.aborted || rejected(result, locale, t.createError)) return
     set(draft, initialDraft)
-    set(notice, { tone: 'success', text: `Sandbox ${name} créée. Ouvrez ses détails pour préparer la connexion SSH.` })
+    set(notice, { tone: 'success', text: t.createSuccess(name) })
     return () => {
       const row = read(inventory).rows.find((item) => item.name === name)
       if (row) set(selected, row)
     }
-  }, uncertain('Orca n’a pas reçu la réponse à la création. La sandbox existe peut-être déjà.'))
+  }, uncertain(t.createTransport, t.retryHint))
 }
 
 function transitioning(row: Sandbox): boolean {
@@ -197,32 +195,36 @@ function stop(snapshot: Inventory, row: Sandbox, expected?: Confirmation): void 
   }
   if (read(confirmation) !== expected || expected.kind !== 'stop' || !sameTarget(row, expected)) return
   const { name, id } = expected
-  void attempt('Arrêt de la sandbox…', async () => {
+  const locale = currentLocale()
+  const t = messages[locale]
+  void attempt(t.stopping, async () => {
     const result = await plugin.request('sandboxes.stop', { name, id, confirmed: true }, { timeoutMs: ACTION_TIMEOUT })
     if (lifetime?.aborted) return
-    if (rejected(result, 'L’arrêt a échoué.')) {
+    if (rejected(result, locale, t.stopError)) {
       const failure = read(notice)
-      if (failure?.tone === 'danger') set(notice, { ...failure, text: `${failure.text} Si des sessions sont ouvertes, fermez-les avant de réessayer. Ne forcez pas l’arrêt.` })
+      if (failure?.tone === 'danger') set(notice, { ...failure, text: `${failure.text} ${t.stopRetry}` })
       return
     }
-    set(notice, { tone: 'success', text: `Sandbox ${name} arrêtée. L’arrêt ne supprime pas ses fichiers.` })
-  }, uncertain('Orca n’a pas reçu la réponse à l’arrêt. La sandbox est peut-être déjà arrêtée.'))
+    set(notice, { tone: 'success', text: t.stopSuccess(name) })
+  }, uncertain(t.stopTransport, t.retryHint))
 }
 
 function testSsh(snapshot: Inventory, row: Sandbox): void {
   if (!fresh(snapshot) || !sameTarget(row, read(selected)) || transitioning(row) || read(confirmation)) return
   const target = { name: row.name, id: row.id }
-  void attempt('Test OpenSSH…', async () => {
+  const locale = currentLocale()
+  const t = messages[locale]
+  void attempt(t.testingSsh, async () => {
     const result = await plugin.request('sandboxes.testSsh', target, { timeoutMs: ACTION_TIMEOUT })
     if (lifetime?.aborted) return
-    if (rejected(result, 'Le test OpenSSH a échoué.')) return
-    set(notice, { tone: 'success', text: `OpenSSH a répondu pour ${row.name}. Testez aussi la connexion dans Orca.` })
+    if (rejected(result, locale, t.sshError)) return
+    set(notice, { tone: 'success', text: t.sshSuccess(row.name) })
     const path = result.value.directory
     const directory = path === READ_ONLY_SOURCE || path?.startsWith(`${READ_ONLY_SOURCE}/`) ? null : path
     return () => {
       if (sameTarget(target, read(selected))) set(ssh, { target, directory })
     }
-  }, uncertain('Orca n’a pas reçu la réponse au test SSH. La sandbox a peut-être démarré.'))
+  }, uncertain(t.sshTransport, t.retryHint))
 }
 
 function choose(snapshot: Inventory, row: Sandbox): void {
@@ -237,51 +239,52 @@ function cancel(expected: Confirmation): void {
 }
 
 function SandboxDetails({ row, snapshot }: { row: Sandbox; snapshot: Inventory }) {
+  const t = messages[currentLocale()]
   const confirm = read(confirmation)
   const discovery = read(ssh)
   const test = discovery && sameTarget(row, discovery.target) ? discovery : null
   const active = fresh(snapshot) && !transitioning(row)
 
   return (
-    <Card title={`Connexion à ${row.name}`}>
+    <Card title={t.connection(row.name)}>
       <Stack gap="sm">
-        <KeyValue label="Paramètres SSH dans Orca" items={[
-          { label: 'Hôte', value: `${row.name}.sbx`, code: true },
-          { label: 'Utilisateur', value: '_default_user_', code: true },
-          { label: 'Port', value: 'Par défaut' },
-          { label: 'Fichier d’identité', value: 'Aucun' }
+        <KeyValue label={t.sshSettings} items={[
+          { label: t.host, value: `${row.name}.sbx`, code: true },
+          { label: t.username, value: '_default_user_', code: true },
+          { label: t.port, value: t.defaultPort },
+          { label: t.identity, value: t.noIdentity }
         ]} />
         {test ? test.directory ? (
-          <Text>Répertoire distant trouvé : <Code>{test.directory}</Code></Text>
+          <Text>{t.directoryFound} <Code>{test.directory}</Code></Text>
         ) : (
-          <Text tone="warning">OpenSSH a répondu, mais aucun répertoire de travail exploitable n’a été trouvé. Repérez le checkout accessible en écriture dans la sandbox.</Text>
+          <Text tone="warning">{t.directoryMissing}</Text>
         ) : null}
         <Row gap="sm" wrap>
-          <Button icon="terminal" disabled={!active || !!confirm} onPress={() => testSsh(snapshot, row)}>Tester SSH</Button>
-          <Button icon="stop" variant="outline" tone="danger" disabled={!active || !row.id || row.status === 'stopped' || !!confirm} onPress={() => stop(snapshot, row)}>Arrêter</Button>
+          <Button icon="terminal" disabled={!active || !!confirm} onPress={() => testSsh(snapshot, row)}>{t.testSsh}</Button>
+          <Button icon="stop" variant="outline" tone="danger" disabled={!active || !row.id || row.status === 'stopped' || !!confirm} onPress={() => stop(snapshot, row)}>{t.stop}</Button>
         </Row>
-        <Text muted size="sm">Tester SSH peut démarrer une sandbox arrêtée. Ce test OpenSSH ne valide pas le runtime Orca.</Text>
-        {!row.id ? <Text muted size="sm">Arrêt indisponible : Docker n’a pas fourni d’identifiant stable.</Text> : null}
+        <Text muted size="sm">{t.sshHint}</Text>
+        {!row.id ? <Text muted size="sm">{t.stopUnavailable}</Text> : null}
         {confirm?.kind === 'stop' && sameTarget(row, confirm) ? (
-          <Callout title={`Arrêter ${row.name} ?`} tone="danger">
+          <Callout title={t.stopTitle(row.name)} tone="danger">
             <Stack gap="sm">
-              <Text>Tous les agents et terminaux de cette sandbox peuvent être interrompus. Ses fichiers sont conservés.</Text>
+              <Text>{t.stopWarning}</Text>
               <Row gap="sm" wrap>
-                <Button variant="outline" onPress={() => cancel(confirm)}>Annuler</Button>
-                <Button tone="danger" disabled={!active} onPress={() => stop(snapshot, row, confirm)}>Confirmer l’arrêt</Button>
+                <Button variant="outline" onPress={() => cancel(confirm)}>{t.cancel}</Button>
+                <Button tone="danger" disabled={!active} onPress={() => stop(snapshot, row, confirm)}>{t.confirmStop}</Button>
               </Row>
             </Stack>
           </Callout>
         ) : null}
-        <Collapsible title="Ouvrir le projet dans Orca" description="Cible SSH, dépôt et worktrees">
+        <Collapsible title={t.openProject} description={t.openProjectHint}>
           <Stack gap="sm">
-            <Text weight="semibold">1. Ajouter la cible SSH</Text>
-            <Text>Dans Settings → SSH → Add Target, recopiez les paramètres ci-dessus. Cliquez sur Test, puis Save. La première connexion installe le runtime géré d’Orca.</Text>
-            <Text weight="semibold">2. Ouvrir le dépôt distant</Text>
-            <Text>Ajoutez le dépôt existant sur cette cible. Sans montage, clonez d’abord votre dépôt dans la sandbox, généralement sous <Code>/home/agent/workspace</Code>. En mode clone, ouvrez le clone accessible en écriture, pas la source en lecture seule.</Text>
-            <Text weight="semibold">3. Choisir où tourne le worktree</Text>
-            <Text>Sans montage ou en mode clone, sélectionnez la cible sous Run on. Les worktrees de la sandbox partagent outils, réseau et services. En montage direct, ouvrez plutôt le checkout existant.</Text>
-            <Text muted>Une reconnexion Orca peut redémarrer la sandbox. Désactivez Reconnect on launch sur la cible SSH si vous souhaitez la laisser arrêtée.</Text>
+            <Text weight="semibold">{t.addTarget}</Text>
+            <Text>{t.addTargetHelp}</Text>
+            <Text weight="semibold">{t.openRepo}</Text>
+            <Text>{t.openRepoHelp}</Text>
+            <Text weight="semibold">{t.runWorktree}</Text>
+            <Text>{t.runWorktreeHelp}</Text>
+            <Text muted>{t.reconnectHint}</Text>
           </Stack>
         </Collapsible>
       </Stack>
@@ -290,6 +293,7 @@ function SandboxDetails({ row, snapshot }: { row: Sandbox; snapshot: Inventory }
 }
 
 export default function Panel() {
+  const t = messages[currentLocale()]
   const snapshot = read(inventory)
   const busy = read(pending)
   const failure = read(listError)
@@ -306,76 +310,76 @@ export default function Panel() {
     <Stack gap="lg">
       <Stack gap="sm">
         <Row justify="between" gap="sm" wrap>
-          <Heading level={1}>Sandboxes locales</Heading>
-          <Button icon="refresh" variant="outline" disabled={!!busy} onPress={() => { if (!read(pending)) void reload() }}>Actualiser</Button>
+          <Heading level={1}>{t.heading}</Heading>
+          <Button icon="refresh" variant="outline" disabled={!!busy} onPress={() => { if (!read(pending)) void reload() }}>{t.refresh}</Button>
         </Row>
         {busy ? <Spinner label={busy} /> : null}
         {failure ? (
-          <Callout tone="danger" title="Liste non actualisée">
-            <Text>{failure} Utilisez Actualiser pour réactiver les actions.</Text>
+          <Callout tone="danger" title={t.listErrorTitle}>
+            <Text>{failure} {t.refreshHint}</Text>
           </Callout>
         ) : null}
         {message ? <Callout tone={message.tone}><Text>{message.text}</Text></Callout> : null}
-        {!snapshot.fresh && snapshot.rows.length ? <Text muted>Dernière liste connue. Actions désactivées.</Text> : null}
+        {!snapshot.fresh && snapshot.rows.length ? <Text muted>{t.staleList}</Text> : null}
         {snapshot.rows.length ? (
-          <List label="Sandboxes Docker">
+          <List label={t.listLabel}>
             {snapshot.rows.map((item) => (
               <ListItem key={item.name} title={item.name} current={sameTarget(item, current)} disabled={!fresh(snapshot)}
                 description={agents.find((agent) => agent.value === item.agent)?.label ?? item.agent}
                 onPress={() => choose(snapshot, item)}>
-                <Badge tone={statuses[item.status].tone}>{statuses[item.status].label}</Badge>
+                <Badge tone={statusTones[item.status]}>{t.status[item.status]}</Badge>
               </ListItem>
             ))}
           </List>
         ) : snapshot.fresh ? (
-          <EmptyState title="Aucune sandbox locale" description="Créez une sandbox pour préparer un projet distant dans Orca." />
+          <EmptyState title={t.emptyTitle} description={t.emptyHint} />
         ) : null}
         {row ? <SandboxDetails key={JSON.stringify([row.name, row.id])} row={row} snapshot={snapshot} /> : null}
       </Stack>
 
-      <Card title="Créer une sandbox" description="Le mode de partage est fixé à la création.">
+      <Card title={t.createTitle} description={t.createHint}>
         <Stack gap="sm">
-          <Input label="Nom" value={value.name} onChange={(name) => editDraft({ name })} maxLength={63}
-            placeholder="mon-projet" disabled={!!busy} invalid={nameInvalid || collision} />
-          {nameInvalid ? <Text tone="danger">Utilisez de 2 à 63 lettres ASCII minuscules, chiffres ou tirets internes. Le nom « default » est réservé.</Text> : null}
-          {collision ? <Text tone="danger">Une sandbox porte déjà ce nom. Choisissez un autre nom.</Text> : null}
-          <Select label="Agent" value={value.agent} options={agents} disabled={!!busy}
+          <Input label={t.name} value={value.name} onChange={(name) => editDraft({ name })} maxLength={63}
+            placeholder={t.nameExample} disabled={!!busy} invalid={nameInvalid || collision} />
+          {nameInvalid ? <Text tone="danger">{t.nameInvalid}</Text> : null}
+          {collision ? <Text tone="danger">{t.nameTaken}</Text> : null}
+          <Select label={t.agent} value={value.agent} options={agents} disabled={!!busy}
             onChange={(agent) => { if (agent === 'claude' || agent === 'codex') editDraft({ agent }) }} />
-          <Select label="Mode de partage" value={value.mode} options={modes.map(({ value, label }) => ({ value, label }))} disabled={!!busy}
+          <Select label={t.sharingMode} value={value.mode} options={modes.map((mode) => ({ value: mode, label: t.modes[mode].label }))} disabled={!!busy}
             onChange={(mode) => { if (mode === 'none' || mode === 'clone' || mode === 'direct') editDraft({ mode }) }} />
-          <Text muted>{modes.find((mode) => mode.value === value.mode)?.help}</Text>
+          <Text muted>{t.modes[value.mode].help}</Text>
           {value.mode !== 'none' ? (
             <Stack gap="xs">
-              <Input label="Chemin local du dépôt" placeholder="/home/moi/mon projet" maxLength={4096} value={value.path}
+              <Input label={t.repoPath} placeholder={t.pathExample} maxLength={4096} value={value.path}
                 onChange={(path) => editDraft({ path })} disabled={!!busy} />
-              <Text muted size="sm">Indiquez la racine du checkout Git principal, pas celle d’un worktree lié.</Text>
+              <Text muted size="sm">{t.pathHint}</Text>
             </Stack>
           ) : null}
           {confirm?.kind === 'direct' ? (
-            <Callout tone="warning" title={`Monter le dossier hôte dans ${confirm.draft.name} ?`}>
+            <Callout tone="warning" title={t.mountTitle(confirm.draft.name)}>
               <Stack gap="sm">
-                <Text>Chemin local canonique : <Code>{confirm.canonicalPath}</Code></Text>
-                <Text>La sandbox pourra lire et modifier ce dossier sur l’hôte.</Text>
+                <Text>{t.canonicalPath} <Code>{confirm.canonicalPath}</Code></Text>
+                <Text>{t.mountWarning}</Text>
                 <Row gap="sm" wrap>
-                  <Button variant="outline" onPress={() => cancel(confirm)}>Annuler</Button>
-                  <Button tone="danger" disabled={!canCreate} onPress={() => create(snapshot, confirm)}>Confirmer le montage et créer</Button>
+                  <Button variant="outline" onPress={() => cancel(confirm)}>{t.cancel}</Button>
+                  <Button tone="danger" disabled={!canCreate} onPress={() => create(snapshot, confirm)}>{t.confirmMount}</Button>
                 </Row>
               </Stack>
             </Callout>
           ) : (
             <Button icon="add" disabled={!canCreate || !!confirm} onPress={() => create(snapshot)}>
-              {value.mode === 'direct' ? 'Vérifier le chemin local' : 'Créer la sandbox'}
+              {value.mode === 'direct' ? t.verifyPath : t.create}
             </Button>
           )}
         </Stack>
       </Card>
 
-      <Collapsible title="Préparation et dépannage" description="Étapes manuelles sur l’hôte et dans Orca">
+      <Collapsible title={t.troubleshooting} description={t.troubleshootingHint}>
         <Stack gap="sm">
-          <Text>Installez Docker Sandboxes (<Code>sbx</Code> 0.48.0 ou ultérieur). Sur l’hôte, connectez-vous avec <Code>sbx login</Code>, configurez les identifiants de l’agent via Docker et choisissez une politique réseau adaptée. Exécutez <Code>sbx setup ssh</Code> une fois.</Text>
-          <Text>Si Tester SSH échoue, vérifiez votre connexion Docker et la configuration SSH, puis réessayez. Si OpenSSH répond mais qu’Orca échoue, utilisez Test dans Settings → SSH pour diagnostiquer le proxy ou le runtime. Ne contournez pas la vérification des clés d’hôte.</Text>
-          <Text>Le panneau ne lance pas d’agent et ne modifie ni vos réglages SSH ni vos identifiants. Orca lance l’agent installé dans le gabarit.</Text>
-          <Text>Avant de supprimer une sandbox, récupérez ses changements via Git. Dans un terminal, utilisez <Code>{'sbx rm <nom>'}</Code> et vérifiez la confirmation de Docker. Les fichiers internes non exportés seront perdus ; retirez vous-même la cible SSH devenue obsolète dans Orca.</Text>
+          <Text>{t.setupHelp}</Text>
+          <Text>{t.sshHelp}</Text>
+          <Text>{t.agentHelp}</Text>
+          <Text>{t.removeHelp}</Text>
         </Stack>
       </Collapsible>
     </Stack>

@@ -6,9 +6,14 @@ export type Sandbox = {
   agent: string
   status: 'running' | 'stopped' | 'starting' | 'stopping' | 'unknown'
 }
+export type ErrorCode =
+  | 'input' | 'sbxMissing' | 'version' | 'format' | 'unavailable' | 'login' | 'policy'
+  | 'timeout' | 'cancelled' | 'overflow' | 'path' | 'gitMissing' | 'confirm'
+  | 'collision' | 'stale' | 'busy' | 'create' | 'stop' | 'sshMissing' | 'ssh'
+
 export type Result<T> =
   | { ok: true; value: T }
-  | { ok: false; error: { code: string; message: string; uncertain?: boolean } }
+  | { ok: false; error: { code: ErrorCode; uncertain?: boolean } }
 
 const label = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
 export function isSandboxName(value: unknown): value is string {

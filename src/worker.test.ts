@@ -124,8 +124,7 @@ test('auth, policy, and SSH errors do not echo CLI output', async () => {
   for (const [failure, code] of [['Run sbx login', 'login'], ['sbx policy init', 'policy'], ['Host key verification failed', 'ssh']]) {
     const { handlers } = fake({ json: JSON.stringify([row]), action: async () => exit('', `${failure}: private-token`, 255) })
     const diagnostic = error(await handlers.testSsh(row))
-    assert.equal(diagnostic.code, code)
-    assert.doesNotMatch(diagnostic.message, /private-token/)
+    assert.deepEqual(diagnostic, { code })
   }
 })
 

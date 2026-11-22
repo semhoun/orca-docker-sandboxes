@@ -23,7 +23,7 @@ test('double création : une requête, puis une seule lecture de réconciliation
       return new Promise((resolve) => { finishCreate = resolve; markStarted() })
     }
   } })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, locale: 'fr-FR' })
   try {
     await view.type({ label: 'Nom' }, name)
     const button = view.find({ type: 'Button', text: 'Créer la sandbox' })
@@ -50,7 +50,7 @@ test('transport en échec : masque le détail et bloque la relance tant que la l
   const host = mockHost({ requests: {
     'sandboxes.list': () => {
       calls.push('list')
-      return canList ? list([sandbox]) : { ok: false, error: { code: 'bad_list', message: 'Liste indisponible.' } }
+      return canList ? list([sandbox]) : { ok: false, error: { code: 'unavailable' } }
     },
     'sandboxes.create': () => {
       calls.push('create')
@@ -58,7 +58,7 @@ test('transport en échec : masque le détail et bloque la relance tant que la l
       throw new Error('RAW_TRANSPORT_DETAIL')
     }
   } })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, locale: 'fr-FR' })
   try {
     await view.type({ label: 'Nom' }, 'nouveau-projet')
     await view.press({ text: 'Créer la sandbox' })
@@ -90,7 +90,7 @@ test('montage direct : prévisualise, annule et confirme uniquement le chemin ca
       return { ok: true, value: request.preview ? { canonicalPath } : {} }
     }
   } })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, locale: 'fr-FR' })
   try {
     await view.type({ label: 'Nom' }, input.name)
     await view.select({ label: 'Agent' }, input.agent)
@@ -125,7 +125,7 @@ test('arrêt : le renouvellement de l’identité invalide la confirmation et un
     },
     'sandboxes.testSsh': () => ({ ok: true, value: { directory: '/run/sandbox/source/depot' } })
   } })
-  const view = await mount(panel, { host })
+  const view = await mount(panel, { host, locale: 'fr-FR' })
   try {
     await view.press({ label: sandbox.name })
     await view.press({ text: 'Arrêter' })
@@ -152,3 +152,29 @@ test('arrêt : le renouvellement de l’identité invalide la confirmation et un
     await view.unmount()
   }
 })
+
+for (const [locale, refresh, status, ssh, diagnostic, uncertain] of [
+  ['fr-CA', 'Actualiser', 'En cours', 'Tester SSH', 'Authentification Docker requise', 'L’action a peut-être abouti.'],
+  ['en-GB', 'Refresh', 'Running', 'Test SSH', 'Docker authentication is required', 'The action may have succeeded.'],
+  ['de-DE', 'Refresh', 'Running', 'Test SSH', 'Docker authentication is required', 'The action may have succeeded.']
+]) {
+  test(`panel labels and worker diagnostics follow the Orca locale: ${locale}`, async () => {
+    const host = mockHost({ requests: {
+      'sandboxes.list': () => list([sandbox]),
+      'sandboxes.testSsh': () => ({ ok: false, error: { code: 'login', uncertain: true } })
+    } })
+    const view = await mount(panel, { host, locale })
+    try {
+      assert.ok(view.find({ type: 'Button', text: refresh }))
+      assert.ok(view.find({ type: 'Badge', text: status }))
+      await view.press({ label: sandbox.name })
+      await view.press({ type: 'Button', text: ssh })
+      const tree = JSON.stringify(view.tree())
+      assert.ok(tree.includes(diagnostic))
+      assert.ok(tree.includes(uncertain))
+      assert.deepEqual(view.errors, [])
+    } finally {
+      await view.unmount()
+    }
+  })
+}

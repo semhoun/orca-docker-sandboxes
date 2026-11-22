@@ -4,7 +4,7 @@
   "id": "docker-sandboxes",
   "name": "Docker Sandboxes",
   "version": "0.1.0",
-  "description": "Gère les microVM Docker locales. Le worker tourne sur l’hôte, hors microVM, avec les droits de votre compte utilisateur.",
+  "description": "Manage local Docker microVMs. The worker runs on the host, outside the microVM, with your permissions. / Gérez les microVM Docker locales. Le worker tourne sur l’hôte, hors microVM, avec vos droits.",
   "engines": { "orca": ">=1.4.247" },
   "pluginApi": 1,
   "main": "src/worker.ts",
